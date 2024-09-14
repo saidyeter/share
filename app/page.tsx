@@ -1,7 +1,6 @@
 "use client"
 
 import { Button, buttonVariants } from "@/components/ui/button";
-import Image from "next/image";
 import { Label } from "@/components/ui/label"
 import { useEffect, useRef, useState } from "react";
 import { ShortFileProp } from "@/lib/types";
@@ -10,29 +9,30 @@ import { uploadToS3 } from "@/lib/utils";
 import { nanoid } from "nanoid";
 import { toast } from "sonner"
 import { Progress } from "@/components/ui/progress"
+import { X } from "lucide-react"
 
 
 export default function Home() {
 
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [upladed, setUpladed] = useState(false)
+  const [uploaded, setUploaded] = useState(false)
   const [progress, setProgress] = useState(10)
   const [uploadedCount, setUploadedCount] = useState(0)
-  const [fileNames, setFileNames] = useState<string[]>([])
+  const [files, setFiles] = useState<{ name: string, size: string, src: string }[]>([])
 
 
   useEffect(() => {
     if (uploadedCount === 0) {
       setProgress(0)
     }
-    else if (uploadedCount === fileNames.length) {
+    else if (uploadedCount === files.length || uploaded) {
       setProgress(100)
     }
     else {
-      setProgress(Math.round((uploadedCount / fileNames.length) * 100))
+      setProgress(Math.round((uploadedCount / files.length) * 100))
     }
-  }, [uploadedCount, fileNames])
+  }, [uploadedCount, files])
 
   async function uploadToServer(event: React.FormEvent<HTMLFormElement>) {
 
@@ -42,9 +42,9 @@ export default function Home() {
     }
 
     // get File[] from FileList
-    const files = Object.values(fileInputRef?.current?.files)
+    const inputFiles = Object.values(fileInputRef?.current?.files)
     // validate files
-    const filesInfo: ShortFileProp[] = files.map((file) => ({
+    const filesInfo: ShortFileProp[] = inputFiles.map((file) => ({
       id: nanoid(5),
       originalFileName: file.name,
       fileSize: file.size,
@@ -53,33 +53,54 @@ export default function Home() {
     const presignedUrls = await createPresignedUrlToUpload(filesInfo)
 
     presignedUrls.forEach(async (presignedUrl) => {
-      const file = files.find(
+      const file = inputFiles.find(
         (file) => file.name === presignedUrl.originalFileName && file.size === presignedUrl.fileSize
       )
       if (!file) {
         throw new Error('File not found')
       }
+      if (!files.some(f => f.name === file.name)) {
+        return
+      }
 
       await uploadToS3(presignedUrl, file)
       setUploadedCount(c => c + 1)
-      setFileNames(p => p.filter(f => f !== file?.name))
+      setFiles(p => p.filter(f => f.name !== file?.name))
       await new Promise(r => setTimeout(r, 1000))
     })
     toast('Yükleme başarılı')
-    setUpladed(true)
+    setUploaded(true)
+    setProgress(100)
   }
 
-  async function onFileChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const files = event.target.files
+  async function onFileChange() {
+    const files = fileInputRef.current?.files
     if (!files) {
-      setFileNames([])
+      setFiles([])
       return
     }
-    setFileNames(Array.from(files).map((file) => file.name))
+    setFiles(Array.from(files).map((file) => {
+      return {
+        name: file.name,
+        size: humanFileSize(file.size),
+        src: URL.createObjectURL(file)
+      }
+    }))
+    setProgress(0)
+    setUploadedCount(0)
+  }
+  async function onRemoveFile(name: string) {
+    const file = files.find(f => f.name === name)
+    if (!file) {
+      return
+    }
+    setFiles(p => p.filter(f => f.name !== file.name))
+    setProgress(0)
+    setUploadedCount(0)
   }
 
   return (
-    <main className="flex flex-col max-w-md m-auto gap-8 items-center sm:items-start font-[family-name:var(--font-geist-sans)]">
+    <main className="flex flex-col justify-center items-center md:py-10 font-[family-name:var(--font-geist-sans)] w-full gap-8">
       <form className='flex justify-between items-center gap-3 w-full' onSubmit={uploadToServer}>
         <input
           id="file-upload"
@@ -89,14 +110,18 @@ export default function Home() {
           className="hidden"
           ref={fileInputRef}
           onChange={onFileChange} />
-        {upladed ?
+        {uploaded ?
           <>
             <a className={`${buttonVariants({ variant: 'default', size: 'lg' })} w-2/3`} >Yüklenenlere göz at</a>
-            <Button variant={'secondary'} type='button' className='w-1/3' onClick={() => setUpladed(false)}>Tekrar Yükle</Button>
+            <Button variant={'secondary'} type='button' className='w-1/3' onClick={() => {
+              setUploaded(false)
+              setUploadedCount(0)
+              setProgress(0)
+            }}>Tekrar Yükle</Button>
           </>
           :
           (
-            fileNames.length > 0 ?
+            files.length > 0 ?
               (<>
                 <Button type='submit' className='w-2/3'>Yükle</Button>
                 <Label
@@ -115,15 +140,33 @@ export default function Home() {
 
       </form>
 
-      {fileNames.length > 0 ?
+      {(files.length > 0 || uploaded) ?
         <Progress value={progress} />
         : null}
-      {fileNames.map((fileName, index) => (
-        <div key={index} className='flex items-start gap-2'>
-          <span>{fileName}</span>
-        </div>
-      ))}
-
+      <div className="flex flex-wrap gap-12">
+        {files.map((file, index) => (
+          <div key={index} className='flex items-start gap-2 relative w-52 h-52 rounded-lg'>
+            <img src={file.src} alt={file.name} className='w-52 h-52 rounded-lg overflow-hidden object-cover z-0' />
+            <div className='absolute top-0 left-0 right-0 bottom-0 bg-black/20 z-10'></div>
+            <Label className="absolute bottom-1 right-1 text-sm text-primary bg-primary-foreground p-1 rounded z-20">{file.size}</Label>
+            <Label className='absolute bottom-1 left-1 text-sm text-primary bg-primary-foreground p-1 rounded hidden sm:absolute sm:block max-w-32 overflow-hidden whitespace-nowrap text-ellipsis z-20'>{file.name}</Label>
+            <Button
+              variant={'secondary'}
+              type='button'
+              onClick={() => onRemoveFile(file.name)}
+              className='absolute top-1 right-1 text-sm text-primary bg-primary-foreground p-1 rounded-full z-20'
+            >
+              <X />
+            </Button>
+          </div>
+        ))}
+      </div>
     </main>
   );
+}
+
+
+function humanFileSize(size: number) {
+  var i = size == 0 ? 0 : Math.floor(Math.log(size) / Math.log(1024));
+  return +((size / Math.pow(1024, i)).toFixed(2)) * 1 + ' ' + ['B', 'KB', 'MB', 'GB', 'TB'][i];
 }
